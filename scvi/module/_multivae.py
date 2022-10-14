@@ -987,6 +987,7 @@ class MULTIVAE(BaseModuleClass):
         kl_global = torch.tensor(0.0)
         return LossRecorder(loss, recon_loss, kl_local, kl_global)
 
+    @auto_move_data
     def get_data(self, x, y):
 
         # TODO: CHECK IF THIS FAILS IN ONLY RNA DATA
@@ -1003,6 +1004,7 @@ class MULTIVAE(BaseModuleClass):
 
         return x_rna, x_chr, x_p, mask_rna, mask_chr, mask_p
 
+    @auto_move_data
     def get_reconstruction_loss(
         self,
         gen_outputs,
@@ -1059,7 +1061,6 @@ class MULTIVAE(BaseModuleClass):
         return rl
 
     def get_reconstruction_loss_expression(self, x, px_rate, px_r, px_dropout):
-        rl = 0.0
         if self.gene_likelihood == "zinb":
             rl = (
                 -ZeroInflatedNegativeBinomial(
@@ -1072,6 +1073,8 @@ class MULTIVAE(BaseModuleClass):
             rl = -NegativeBinomial(mu=px_rate, theta=px_r).log_prob(x).sum(dim=-1)
         elif self.gene_likelihood == "poisson":
             rl = -Poisson(px_rate).log_prob(x).sum(dim=-1)
+        else:
+            rl = 0.0
         return rl
 
     def get_reconstruction_loss_accessibility(self, x, region_factor, y_scale, library):
@@ -1081,6 +1084,8 @@ class MULTIVAE(BaseModuleClass):
         elif self.peak_likelihood == "poisson":
             p = torch.exp(library) * torch.softmax(y_scale + region_factor, dim=-1)
             rl = -Poisson(p).log_prob(x).sum(dim=-1)
+        else:
+            rl = 0.0
         return rl
 
     def get_kl_terms(self, inf_outputs, mask_e, mask_a, mask_p):
@@ -1221,7 +1226,6 @@ def mix_modalities(Xs, masks, weights, weight_transform: callable = None):
     return (weights * Xs).sum(1)
 
 
-@auto_move_data
 def sym_kld(qzm1, qzv1, qzm2, qzv2):
     rv1 = Normal(qzm1, qzv1.sqrt())
     rv2 = Normal(qzm2, qzv2.sqrt())
