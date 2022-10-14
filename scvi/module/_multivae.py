@@ -956,70 +956,24 @@ class MULTIVAE(BaseModuleClass):
     ):
         # Get the data
         x = tensors[REGISTRY_KEYS.X_KEY]
+        y = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
+        x_rna, x_chr, x_pro, mask_expr, mask_acc, mask_pro = self.get_data(x, y)
 
-        # TODO: CHECK IF THIS FAILS IN ONLY RNA DATA
-        x_rna = x[:, : self.n_input_genes]
-        x_chr = x[:, self.n_input_genes : (self.n_input_genes + self.n_input_regions)]
-        if self.n_input_proteins == 0:
-            y = torch.zeros(x.shape[0], 1, device=x.device, requires_grad=False)
-        else:
-            y = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
-
-        mask_expr = x_rna.sum(dim=1) > 0
-        mask_acc = x_chr.sum(dim=1) > 0
-        mask_pro = y.sum(dim=1) > 0
-
-        # Compute Accessibility loss
-        y_scale = generative_outputs["y_scale"]
-        libsize_acc = inference_outputs["libsize_acc"]
-        region_factor = generative_outputs["region_factor"]
-        rl_accessibility = self.get_reconstruction_loss_accessibility(
-            x,
-            region_factor,
-            y_scale,
-            libsize_acc,
-        )
-
-        # Compute Expression loss
-        px_rate = generative_outputs["px_rate"]
-        px_r = generative_outputs["px_r"]
-        px_dropout = generative_outputs["px_dropout"]
-        x_expression = x[:, : self.n_input_genes]
-        rl_expression = self.get_reconstruction_loss_expression(
-            x_expression, px_rate, px_r, px_dropout
-        )
-
-        # Compute Protein loss - No ability to mask minibatch (Param:None)
-        if mask_pro.sum().gt(0):
-            py_ = generative_outputs["py_"]
-            rl_protein = get_reconstruction_loss_protein(y, py_, None)
-        else:
-            rl_protein = torch.zeros(x.shape[0], device=x.device, requires_grad=False)
-
-        # calling without weights makes this act like a masked sum
-        # TODO : CHECK MIXING HERE
-        recon_loss = (
-            (rl_expression * mask_expr)
-            + (rl_accessibility * mask_acc)
-            + (rl_protein * mask_pro)
-        )
-
-        # Compute KLD between Z and N(0,I)
-        qz_m = inference_outputs["qz_m"]
-        qz_v = inference_outputs["qz_v"]
-        kl_div_z = kld(
-            Normal(qz_m, torch.sqrt(qz_v)),
-            Normal(0, 1),
-        ).sum(dim=1)
-
-        # Compute KLD between distributions for paired data
-        kld_paired = self._compute_mod_penalty(
-            (inference_outputs["qzm_expr"], inference_outputs["qzv_expr"]),
-            (inference_outputs["qzm_acc"], inference_outputs["qzv_acc"]),
-            (inference_outputs["qzm_pro"], inference_outputs["qzv_pro"]),
+        recon_loss = self.get_reconstruction_loss(
+            generative_outputs,
+            inference_outputs,
+            x_rna,
+            x_chr,
+            x_pro,
             mask_expr,
             mask_acc,
             mask_pro,
+            x.shape[0],
+            x.device,
+        )
+
+        kl_div_z, kld_paired = self.get_kl_terms(
+            inference_outputs, mask_expr, mask_acc, mask_pro
         )
 
         # KL WARMUP
@@ -1032,6 +986,77 @@ class MULTIVAE(BaseModuleClass):
         kl_local = dict(kl_divergence_z=kl_div_z)
         kl_global = torch.tensor(0.0)
         return LossRecorder(loss, recon_loss, kl_local, kl_global)
+
+    def get_data(self, x, y):
+
+        # TODO: CHECK IF THIS FAILS IN ONLY RNA DATA
+        x_rna = x[:, : self.n_input_genes]
+        x_chr = x[:, self.n_input_genes : (self.n_input_genes + self.n_input_regions)]
+        if self.n_input_proteins == 0:
+            x_p = torch.zeros(x.shape[0], 1, device=x.device, requires_grad=False)
+        else:
+            x_p = y
+
+        mask_rna = x_rna.sum(dim=1) > 0
+        mask_chr = x_chr.sum(dim=1) > 0
+        mask_p = y.sum(dim=1) > 0
+
+        return x_rna, x_chr, x_p, mask_rna, mask_chr, mask_p
+
+    def get_reconstruction_loss(
+        self,
+        gen_outputs,
+        inf_outputs,
+        x_e,
+        x_a,
+        x_p,
+        mask_e,
+        mask_a,
+        mask_p,
+        shape0,
+        device,
+    ):
+
+        # Compute Expression loss
+        if mask_e.sum().gt(0):
+            px_rate = gen_outputs["px_rate"]
+            px_r = gen_outputs["px_r"]
+            px_dropout = gen_outputs["px_dropout"]
+            rl_expression = self.get_reconstruction_loss_expression(
+                x_e, px_rate, px_r, px_dropout
+            )
+        else:
+            rl_expression = torch.zeros(shape0, device=device, requires_grad=False)
+
+        # Compute Accessibility loss
+        if mask_p.sum().gt(0):
+            y_scale = gen_outputs["y_scale"]
+            libsize_acc = inf_outputs["libsize_acc"]
+            region_factor = gen_outputs["region_factor"]
+            rl_accessibility = self.get_reconstruction_loss_accessibility(
+                x_a,
+                region_factor,
+                y_scale,
+                libsize_acc,
+            )
+        else:
+            rl_accessibility = torch.zeros(shape0, device=device, requires_grad=False)
+
+        # Compute Protein loss - No ability to mask minibatch (Param:None)
+        if mask_p.sum().gt(0):
+            py_ = gen_outputs["py_"]
+            rl_protein = get_reconstruction_loss_protein(x_p, py_, None)
+        else:
+            rl_protein = torch.zeros(shape0, device=device, requires_grad=False)
+
+        # calling without weights makes this act like a masked sum
+        rl = (
+            (rl_expression * mask_e)
+            + (rl_accessibility * mask_a)
+            + (rl_protein * mask_p)
+        )
+
+        return rl
 
     def get_reconstruction_loss_expression(self, x, px_rate, px_r, px_dropout):
         rl = 0.0
@@ -1057,6 +1082,27 @@ class MULTIVAE(BaseModuleClass):
             p = torch.exp(library) * torch.softmax(y_scale + region_factor, dim=-1)
             rl = -Poisson(p).log_prob(x).sum(dim=-1)
         return rl
+
+    def get_kl_terms(self, inf_outputs, mask_e, mask_a, mask_p):
+        # Compute KLD between Z and N(0,I)
+        qz_m = inf_outputs["qz_m"]
+        qz_v = inf_outputs["qz_v"]
+        kl_div_z = kld(
+            Normal(qz_m, torch.sqrt(qz_v)),
+            Normal(0, 1),
+        ).sum(dim=1)
+
+        # Compute KLD between distributions for paired data
+        kld_paired = self._compute_mod_penalty(
+            (inf_outputs["qzm_expr"], inf_outputs["qzv_expr"]),
+            (inf_outputs["qzm_acc"], inf_outputs["qzv_acc"]),
+            (inf_outputs["qzm_pro"], inf_outputs["qzv_pro"]),
+            mask_e,
+            mask_a,
+            mask_p,
+        )
+
+        return kl_div_z, kld_paired
 
     def _compute_mod_penalty(
         self, mod_params1, mod_params2, mod_params3, mask1, mask2, mask3
