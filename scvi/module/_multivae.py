@@ -957,10 +957,16 @@ class MULTIVAE(BaseModuleClass):
         # Get the data
         x = tensors[REGISTRY_KEYS.X_KEY]
         if self.n_input_proteins == 0:
-            y = torch.zeros(x.shape[0], 1, device=x.device, requires_grad=False)
+            x_pro = torch.zeros(x.shape[0], 1, device=x.device, requires_grad=False)
         else:
-            y = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
-        x_rna, x_chr, x_pro, mask_expr, mask_acc, mask_pro = self.get_data(x, y)
+            x_pro = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
+        # TODO: CHECK IF THIS FAILS IN ONLY RNA DATA
+        x_rna = x[:, : self.n_input_genes]
+        x_chr = x[:, self.n_input_genes : (self.n_input_genes + self.n_input_regions)]
+
+        mask_expr = x_rna.sum(dim=1) > 0
+        mask_acc = x_chr.sum(dim=1) > 0
+        mask_pro = x_pro.sum(dim=1) > 0
 
         recon_loss = self.get_reconstruction_loss(
             generative_outputs,
@@ -975,8 +981,21 @@ class MULTIVAE(BaseModuleClass):
             x.device,
         )
 
-        kl_div_z, kld_paired = self.get_kl_terms(
-            inference_outputs, mask_expr, mask_acc, mask_pro
+        qz_m = inference_outputs["qz_m"]
+        qz_v = inference_outputs["qz_v"]
+        kl_div_z = kld(
+            Normal(qz_m, torch.sqrt(qz_v)),
+            Normal(0, 1),
+        ).sum(dim=1)
+
+        # Compute KLD between distributions for paired data
+        kld_paired = self._compute_mod_penalty(
+            (inference_outputs["qzm_expr"], inference_outputs["qzv_expr"]),
+            (inference_outputs["qzm_acc"], inference_outputs["qzv_acc"]),
+            (inference_outputs["qzm_pro"], inference_outputs["qzv_pro"]),
+            mask_expr,
+            mask_acc,
+            mask_pro,
         )
 
         # KL WARMUP
@@ -989,23 +1008,6 @@ class MULTIVAE(BaseModuleClass):
         kl_local = dict(kl_divergence_z=kl_div_z)
         kl_global = torch.tensor(0.0)
         return LossRecorder(loss, recon_loss, kl_local, kl_global)
-
-    @auto_move_data
-    def get_data(self, x, y):
-
-        # TODO: CHECK IF THIS FAILS IN ONLY RNA DATA
-        x_rna = x[:, : self.n_input_genes]
-        x_chr = x[:, self.n_input_genes : (self.n_input_genes + self.n_input_regions)]
-        if self.n_input_proteins == 0:
-            x_p = torch.zeros(x.shape[0], 1, device=x.device, requires_grad=False)
-        else:
-            x_p = y
-
-        mask_rna = x_rna.sum(dim=1) > 0
-        mask_chr = x_chr.sum(dim=1) > 0
-        mask_p = y.sum(dim=1) > 0
-
-        return x_rna, x_chr, x_p, mask_rna, mask_chr, mask_p
 
     @auto_move_data
     def get_reconstruction_loss(
@@ -1091,27 +1093,7 @@ class MULTIVAE(BaseModuleClass):
             rl = 0.0
         return rl
 
-    def get_kl_terms(self, inf_outputs, mask_e, mask_a, mask_p):
-        # Compute KLD between Z and N(0,I)
-        qz_m = inf_outputs["qz_m"]
-        qz_v = inf_outputs["qz_v"]
-        kl_div_z = kld(
-            Normal(qz_m, torch.sqrt(qz_v)),
-            Normal(0, 1),
-        ).sum(dim=1)
-
-        # Compute KLD between distributions for paired data
-        kld_paired = self._compute_mod_penalty(
-            (inf_outputs["qzm_expr"], inf_outputs["qzv_expr"]),
-            (inf_outputs["qzm_acc"], inf_outputs["qzv_acc"]),
-            (inf_outputs["qzm_pro"], inf_outputs["qzv_pro"]),
-            mask_e,
-            mask_a,
-            mask_p,
-        )
-
-        return kl_div_z, kld_paired
-
+    @auto_move_data
     def _compute_mod_penalty(
         self, mod_params1, mod_params2, mod_params3, mask1, mask2, mask3
     ):
@@ -1229,6 +1211,7 @@ def mix_modalities(Xs, masks, weights, weight_transform: callable = None):
     return (weights * Xs).sum(1)
 
 
+@auto_move_data
 def sym_kld(qzm1, qzv1, qzm2, qzv2):
     rv1 = Normal(qzm1, qzv1.sqrt())
     rv2 = Normal(qzm2, qzv2.sqrt())
