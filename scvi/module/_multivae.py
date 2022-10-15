@@ -956,7 +956,10 @@ class MULTIVAE(BaseModuleClass):
     ):
         # Get the data
         x = tensors[REGISTRY_KEYS.X_KEY]
-        y = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
+        if self.n_input_proteins == 0:
+            y = torch.zeros(x.shape[0], 1, device=x.device, requires_grad=False)
+        else:
+            y = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
         x_rna, x_chr, x_pro, mask_expr, mask_acc, mask_pro = self.get_data(x, y)
 
         recon_loss = self.get_reconstruction_loss(
