@@ -147,7 +147,7 @@ class MULTIVI(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass, ArchesMixin):
         region_factors: bool = True,
         gene_likelihood: Literal["zinb", "nb", "poisson"] = "zinb",
         dispersion: Literal["gene", "gene-batch", "gene-label", "gene-cell"] = "gene",
-        peak_likelihood: Literal["bernoulli", "poisson"] = "bernoulli",
+        peak_likelihood: Literal["peakvi", "bernoulli", "poisson"] = "peakvi",
         peak_dispersion: Literal[
             "peak", "peak-batch", "peak-label", "peak-cell"
         ] = "peak",
@@ -160,6 +160,8 @@ class MULTIVI(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass, ArchesMixin):
         protein_dispersion: Literal[
             "protein", "protein-batch", "protein-label"
         ] = "protein",
+        log_variational: bool = False,
+        use_observed_library_size: bool = False,
         **model_kwargs,
     ):
         super().__init__(adata)
@@ -204,13 +206,15 @@ class MULTIVI(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass, ArchesMixin):
             peak_dispersion=peak_dispersion,
             use_batch_norm=use_batch_norm,
             use_layer_norm=use_layer_norm,
-            use_size_factor_key=use_size_factor_key,
             latent_distribution=latent_distribution,
             deeply_inject_covariates=deeply_inject_covariates,
             encode_covariates=encode_covariates,
             protein_background_prior_mean=prior_mean,
             protein_background_prior_scale=prior_scale,
             protein_dispersion=protein_dispersion,
+            log_variational=log_variational,
+            use_size_factor_key=use_size_factor_key,
+            use_observed_lib_size=use_observed_library_size,
             **model_kwargs,
         )
         self._model_summary_string = (

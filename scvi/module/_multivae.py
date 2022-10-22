@@ -60,7 +60,7 @@ class DecoderATACVI(nn.Module):
         inject_covariates: bool = True,
         use_batch_norm: bool = False,
         use_layer_norm: bool = False,
-        peak_likelihood: Literal["bernoulli", "poisson"] = "poisson",
+        peak_likelihood: Literal["peakvi", "bernoulli", "poisson"] = "peakvi",
     ):
         super().__init__()
         self.y_decoder = FCLayers(
@@ -76,10 +76,10 @@ class DecoderATACVI(nn.Module):
             activation_fn=torch.nn.LeakyReLU,  # adding this because PeakVi uses Leaky Relu in decoder
         )
 
-        if peak_likelihood == "poisson":
-            y_scale_activation = nn.Identity()
-        elif peak_likelihood == "bernoulli":
+        if peak_likelihood == "peakvi":
             y_scale_activation = nn.Sigmoid()
+        else:  # peak_likelihood == "bernoulli" or peak_likelihood == "poisson"
+            y_scale_activation = nn.Identity()
 
         self.y_scale_decoder = nn.Sequential(
             nn.Linear(n_hidden, n_output),
@@ -377,7 +377,7 @@ class MULTIVAE(BaseModuleClass):
         protein_dispersion: str = "protein",
         log_variational: bool = False,
         use_size_factor_key: bool = False,
-        use_observed_lib_size: bool = True,
+        use_observed_lib_size: bool = False,
     ):
         super().__init__()
 
@@ -1073,7 +1073,9 @@ class MULTIVAE(BaseModuleClass):
             # In PeakVI, the Bernoulli probability is computed by multiplying 3 measures:
             # sigmoid-ed:y_scale; sigmoid(region_factors); sigmoid-ed: library, if observed, norm by n_input_regions
             if self.use_observed_lib_size:
-                library = torch.exp(library) / self.n_input_regions
+                library = torch.clip(
+                    torch.exp(library) / self.n_input_regions, 0.01, 0.99
+                )
             p = library * torch.sigmoid(region_factor) * y_scale
             rl = torch.nn.BCELoss(reduction="none")(p, (x > 0).float()).sum(dim=-1)
 
